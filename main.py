@@ -44,42 +44,58 @@ BANNED_PATTERNS = (
 
 
 def validate(entry: str) -> None:
-    """Reject any entry that breaks the brief's constraints, with a clear error."""
+    """Reject any entry that breaks the brief's constraints, with a clear error.
+
+    Each message names the constraint that failed and the offending value, so
+    a bad edit points straight at what to fix instead of a bare traceback.
+    """
     if not entry or not entry.strip():
-        raise ValueError("entry is empty or only whitespace: gate needs 1-200 characters")
+        raise ValueError(
+            "entry is empty or only whitespace — the gate needs 1-200 characters"
+        )
     if not 1 <= len(entry) <= MAX_CHARS:
         raise ValueError(
-            f"entry is {len(entry)} chars, outside the 1-{MAX_CHARS} gate"
+            f"entry length {len(entry)} chars is outside the 1-{MAX_CHARS} gate"
         )
     if "\n" in entry or "\r" in entry:
-        raise ValueError("entry must be one line: it contains a newline")
+        raise ValueError(
+            "entry must be exactly one line — it contains a newline character"
+        )
     sentences = [s for s in re.split(r"[.!?]+", entry) if s.strip()]
     if len(sentences) > MAX_SENTENCES:
         raise ValueError(
-            f"entry has {len(sentences)} sentences, over the {MAX_SENTENCES} cap"
+            f"entry has {len(sentences)} sentences, over the {MAX_SENTENCES}-sentence cap"
         )
     for pattern in BANNED_PATTERNS:
         match = pattern.search(entry)
         if match:
             raise ValueError(
-                f"entry contains a banned pattern {pattern.pattern!r}: {match.group(0)!r}"
+                f"entry contains banned text {match.group(0)!r} "
+                f"(pattern {pattern.pattern!r}) — remove it before submitting"
             )
 
 
 validate(ENTRY)
 
 
-def main() -> None:
-    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
-    os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, "entry.txt")
+def write_entry(path: str) -> bytes:
+    """Write ENTRY to path as exact bytes and return what was written.
+
+    Byte-exactness is the whole point: the grader reads entry.txt as bytes,
+    so the file must be ENTRY encoded as UTF-8 with no trailing newline and
+    no newline translation. That is why the file is opened with
+    ``newline=""`` — on any platform, Python must not rewrite ``\n`` — and
+    why the caller verifies the bytes on disk instead of trusting the write.
+    """
     with open(path, "w", encoding="utf-8", newline="") as f:
         f.write(ENTRY)
-    # Verify the write: read the file back, compare bytes, then compare the
-    # sha256 digest of the read-back bytes against the expected digest, so a
-    # partial write, encoding surprise, or one-byte corruption fails loudly
-    # instead of submitting a corrupted entry.
-    written = open(path, "rb").read()
+    # Re-read from disk rather than trusting the write buffer: a partial
+    # write or encoding surprise only shows up in the bytes on disk.
+    return open(path, "rb").read()
+
+
+def verify_written(path: str, written: bytes) -> None:
+    """Fail loudly unless the bytes on disk are exactly ENTRY, byte for byte."""
     if written != ENTRY.encode("utf-8"):
         raise OSError(f"entry.txt at {path} does not match the entry")
     digest = hashlib.sha256(written).hexdigest()
@@ -87,6 +103,16 @@ def main() -> None:
         raise OSError(
             f"entry.txt sha256 {digest} != expected {EXPECTED_SHA256}"
         )
+
+
+def main() -> None:
+    # /output is the grader sandbox's default output dir; MAKEFUN_OUTPUT_DIR
+    # overrides it when the harness sets one.
+    out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR") or "/output"
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "entry.txt")
+    written = write_entry(path)
+    verify_written(path, written)
 
 
 if __name__ == "__main__":
